@@ -13,36 +13,114 @@ export default function Home() {
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const currentSourceLanguageRef = useRef<string>('en-US'); // Default or last detected language
 
+  // Helper function to convert AudioBuffer to WAV Blob
+  const bufferToWav = (buffer: AudioBuffer) => {
+    const numOfChan = buffer.numberOfChannels;
+    const length = buffer.length * numOfChan;
+    const result = new Float32Array(length);
+    const nowBuffering = new Float32Array(buffer.length);
+
+    for (let i = 0; i < numOfChan; i++) {
+      buffer.copyFromChannel(nowBuffering, i, 0);
+      for (let j = 0; j < buffer.length; j++) {
+        result[j * numOfChan + i] = nowBuffering[j];
+      }
+    }
+
+    const sampleRate = buffer.sampleRate;
+    const bytesPerSample = 2; // 16-bit pcm
+    const blockAlign = numOfChan * bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = length * bytesPerSample;
+
+    const bufferArray = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(bufferArray);
+
+    function writeString(view: DataView, offset: number, string: string) {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    }
+
+    // RIFF chunk descriptor
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+    // FMT sub-chunk
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numOfChan, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);
+    // data sub-chunk
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    // write the PCM samples
+    let offset = 44;
+    for (let i = 0; i < length; i++) {
+      let s = Math.max(-1, Math.min(1, result[i]));
+      s = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      view.setInt16(offset, s, true);
+      offset += 2;
+    }
+
+    return new Blob([view], { type: 'audio/wav' });
+  };
+
   useEffect(() => {
     // Request microphone access and set up MediaRecorder
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       navigator.mediaDevices.getUserMedia({ audio: true })
         .then(stream => {
           audioStreamRef.current = stream;
+          console.log('Microphone stream obtained:', stream);
           mediaRecorderRef.current = new MediaRecorder(stream);
+          console.log('MediaRecorder initialized:', mediaRecorderRef.current);
 
           mediaRecorderRef.current.ondataavailable = (event) => {
-            audioChunksRef.current.push(event.data);
+            console.log('MediaRecorder ondataavailable event:', event);
+            console.log('event.data.size:', event.data.size);
+            console.log('event.data.type:', event.data.type);
+            if (event.data.size > 0) {
+              audioChunksRef.current.push(event.data);
+            }
+          };
+
+          mediaRecorderRef.current.onerror = (event) => {
+            console.error('MediaRecorder error:', event.error);
           };
 
           mediaRecorderRef.current.onstop = async () => {
             const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
             audioChunksRef.current = []; // Clear chunks for next recording
 
-            // Convert Blob to Base64
-            const reader = new FileReader();
-            reader.readAsDataURL(audioBlob);
-            reader.onloadend = () => {
-              const base64data = reader.result?.toString().split(',')[1]; // Get base64 part
-              if (base64data) {
-                sendAudioToSpeechToText(base64data);
-              }
-            };
-          };
-
-          mediaRecorderRef.current.onerror = (event) => {
-            console.error('MediaRecorder error:', event.error);
-          };
+                            // Decode WebM to AudioBuffer
+                            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            const arrayBuffer = await audioBlob.arrayBuffer();
+                            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                            console.log('Decoded AudioBuffer - duration:', audioBuffer.duration, 'channels:', audioBuffer.numberOfChannels, 'sampleRate:', audioBuffer.sampleRate);
+            
+                            // Convert AudioBuffer to WAV Blob
+                            const wavBlob = bufferToWav(audioBuffer);
+                            console.log('Converted WAV Blob size:', wavBlob.size);
+            
+                            if (wavBlob.size > 0) {
+                              const reader = new FileReader();
+                              reader.readAsDataURL(wavBlob);
+                              reader.onloadend = () => {
+                                const base64data = reader.result?.toString().split(',')[1];
+                                if (base64data) {
+                                  sendAudioToSpeechToText(base64data);
+                                  console.log('Base64 data generated and sent to backend.');
+                                }
+                              };
+                            } else {
+                              console.log('Warning: WAV Blob is empty, not sending to backend.');
+                            }          };
         })
         .catch(error => {
           console.error('Microphone access denied or error:', error);
@@ -59,8 +137,35 @@ export default function Home() {
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
       }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
     };
   }, []); // Empty dependency array to run once on mount
+
+  const toggleListening = () => {
+    console.log('toggleListening called.');
+    console.log('mediaRecorderRef.current:', mediaRecorderRef.current);
+    console.log('audioStreamRef.current:', audioStreamRef.current);
+    if (!mediaRecorderRef.current || !audioStreamRef.current) {
+      alert('Microphone not accessible or MediaRecorder not initialized.');
+      return;
+    }
+
+    if (listening) {
+      mediaRecorderRef.current.stop();
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+      }
+    } else {
+      setOriginalText('');
+      setTranslatedText('');
+      setTranslatedArabicText('');
+      audioChunksRef.current = []; // Clear any previous audio chunks
+      mediaRecorderRef.current.start(1000); // Start recording and emit data every 1000ms
+    }
+    setListening(!listening);
+  };
 
   const sendAudioToSpeechToText = async (audioBase64: string) => {
     try {
@@ -84,11 +189,15 @@ export default function Home() {
 
       const data = await response.json();
       const { transcription, detectedLanguage } = data;
+      console.log('Received transcription:', transcription);
+      console.log('Received detectedLanguage:', detectedLanguage);
 
       if (transcription) {
         setOriginalText(transcription);
+        console.log('setOriginalText called with:', transcription);
         currentSourceLanguageRef.current = detectedLanguage || 'en-US'; // Use detected language
         detectAndTranslate(transcription); // Trigger translation with the new transcription
+        console.log('detectAndTranslate called with:', transcription);
       }
 
     } catch (error) {
@@ -150,26 +259,7 @@ export default function Home() {
     }
   };
 
-  const toggleListening = () => {
-    if (!mediaRecorderRef.current || !audioStreamRef.current) {
-      alert('Microphone not accessible or MediaRecorder not initialized.');
-      return;
-    }
 
-    if (listening) {
-      mediaRecorderRef.current.stop();
-      if (debounceTimeoutRef.current) {
-        clearTimeout(debounceTimeoutRef.current);
-      }
-    } else {
-      setOriginalText('');
-      setTranslatedText('');
-      setTranslatedArabicText('');
-      audioChunksRef.current = []; // Clear any previous audio chunks
-      mediaRecorderRef.current.start();
-    }
-    setListening(!listening);
-  };
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-24">
@@ -184,6 +274,11 @@ export default function Home() {
       <div className="w-4/5 max-w-2xl mt-8 border border-gray-300 p-4 rounded-lg shadow-md">
         <h2 className="text-xl font-semibold mb-2">Original Text:</h2>
         <p id="originalText" className="text-gray-700">{originalText}</p>
+      </div>
+
+      <div className="w-4/5 max-w-2xl mt-4 border border-gray-300 p-4 rounded-lg shadow-md">
+        <h2 className="text-xl font-semibold mb-2">Detected Language:</h2>
+        <p id="detectedLanguage" className="text-gray-700">{currentSourceLanguageRef.current}</p>
       </div>
 
       <div className="w-4/5 max-w-2xl mt-4 border border-gray-300 p-4 rounded-lg shadow-md">
