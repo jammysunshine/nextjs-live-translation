@@ -79,16 +79,49 @@ export default function Home() {
         .then(stream => {
           audioStreamRef.current = stream;
           console.log('Microphone stream obtained:', stream);
-          mediaRecorderRef.current = new MediaRecorder(stream);
+          mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/mp4' });
           console.log('MediaRecorder initialized:', mediaRecorderRef.current);
           setIsMicInitialized(true); // Set mic initialized to true
 
-          mediaRecorderRef.current.ondataavailable = (event) => {
+          mediaRecorderRef.current.ondataavailable = async (event) => {
             console.log('MediaRecorder ondataavailable event:', event);
             console.log('event.data.size:', event.data.size);
             console.log('event.data.type:', event.data.type);
             if (event.data.size > 0) {
               audioChunksRef.current.push(event.data);
+              // Send chunks every 10 seconds
+              if (audioChunksRef.current.length * 1000 >= 10000) { // Assuming 1-second chunks
+                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                audioChunksRef.current = []; // Clear chunks for next recording
+
+                // Decode WebM to AudioBuffer
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                try {
+                  const arrayBuffer = await audioBlob.arrayBuffer();
+                  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                  console.log('Decoded AudioBuffer - duration:', audioBuffer.duration, 'channels:', audioBuffer.numberOfChannels, 'sampleRate:', audioBuffer.sampleRate);
+
+                  // Convert AudioBuffer to WAV Blob
+                  const wavBlob = bufferToWav(audioBuffer);
+                  console.log('Converted WAV Blob size:', wavBlob.size);
+
+                  if (wavBlob.size > 0) {
+                    const reader = new FileReader();
+                    reader.readAsDataURL(wavBlob);
+                    reader.onloadend = () => {
+                      const base64data = reader.result?.toString().split(',')[1];
+                      if (base64data) {
+                        sendAudioToSpeechToText(base64data);
+                        console.log('Base64 data generated and sent to backend.');
+                      }
+                    };
+                  } else {
+                    console.log('Warning: WAV Blob is empty, not sending to backend.');
+                  }
+                } catch (error) {
+                  console.error('Error decoding audio data:', error);
+                }
+              }
             }
           };
 
@@ -97,32 +130,41 @@ export default function Home() {
           };
 
           mediaRecorderRef.current.onstop = async () => {
-            const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-            audioChunksRef.current = []; // Clear chunks for next recording
+            if (audioChunksRef.current.length > 0) {
+              const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/mp4' });
+              audioChunksRef.current = []; // Clear chunks for next recording
 
-                            // Decode WebM to AudioBuffer
-                            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                            const arrayBuffer = await audioBlob.arrayBuffer();
-                            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                            console.log('Decoded AudioBuffer - duration:', audioBuffer.duration, 'channels:', audioBuffer.numberOfChannels, 'sampleRate:', audioBuffer.sampleRate);
-            
-                            // Convert AudioBuffer to WAV Blob
-                            const wavBlob = bufferToWav(audioBuffer);
-                            console.log('Converted WAV Blob size:', wavBlob.size);
-            
-                            if (wavBlob.size > 0) {
-                              const reader = new FileReader();
-                              reader.readAsDataURL(wavBlob);
-                              reader.onloadend = () => {
-                                const base64data = reader.result?.toString().split(',')[1];
-                                if (base64data) {
-                                  sendAudioToSpeechToText(base64data);
-                                  console.log('Base64 data generated and sent to backend.');
-                                }
-                              };
-                            } else {
-                              console.log('Warning: WAV Blob is empty, not sending to backend.');
-                            }          };
+              // Decode WebM to AudioBuffer
+              const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+              try {
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                console.log('Decoded AudioBuffer - duration:', audioBuffer.duration, 'channels:', audioBuffer.numberOfChannels, 'sampleRate:', audioBuffer.sampleRate);
+
+                // Convert AudioBuffer to WAV Blob
+                const wavBlob = bufferToWav(audioBuffer);
+                console.log('Converted WAV Blob size:', wavBlob.size);
+
+                if (wavBlob.size > 0) {
+                  const reader = new FileReader();
+                  reader.readAsDataURL(wavBlob);
+                  reader.onloadend = () => {
+                    const base64data = reader.result?.toString().split(',')[1];
+                    if (base64data) {
+                      sendAudioToSpeechToText(base64data);
+                      console.log('Base64 data generated and sent to backend.');
+                    }
+                  };
+                } else {
+                  console.log('Warning: WAV Blob is empty, not sending to backend.');
+                }
+              } catch (error) {
+                console.error('Error decoding audio data on stop:', error);
+              }
+            } else {
+              console.log('No audio chunks to process on stop.');
+            }
+          };
         })
         .catch(error => {
           console.error('Microphone access denied or error:', error);
@@ -186,10 +228,12 @@ export default function Home() {
 
       if (!response.ok) {
         const errorData = await response.json();
+        console.error('Backend error response:', errorData);
         throw new Error(`Speech-to-Text API Error: ${errorData.error || response.statusText}`);
       }
 
       const data = await response.json();
+      console.log('Backend response data:', data);
       const { transcription, detectedLanguage } = data;
       console.log('Received transcription:', transcription);
       console.log('Received detectedLanguage:', detectedLanguage);

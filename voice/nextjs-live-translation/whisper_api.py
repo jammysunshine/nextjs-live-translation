@@ -15,7 +15,7 @@ app = Flask(__name__)
 # You can choose a different model like "small" or "medium" for better accuracy
 # but "base" is a good starting point for CPU and smaller downloads.
 print("Loading Whisper model (this may take a while)...")
-model = whisper.load_model("small")
+model = whisper.load_model("base")
 print("Whisper model loaded.")
 
 @app.route('/transcribe', methods=['POST'])
