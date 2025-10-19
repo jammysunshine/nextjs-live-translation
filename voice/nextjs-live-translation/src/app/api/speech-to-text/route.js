@@ -1,37 +1,27 @@
-import { getSpeechToTextService } from '@backend/config';
-
 export async function POST(req) {
     try {
-        const speechToTextService = getSpeechToTextService();
-        const { audioBase64, config } = await req.json(); // Expecting base64 encoded audio and config
+        const { audioBase64 } = await req.json(); // Expecting base64 encoded audio
 
-        const audio = {
-            content: audioBase64,
-        };
-
-        const request = {
-            audio: audio,
-            config: {
-                encoding: config.encoding || 'LINEAR16', // Must match the audio encoding
-                sampleRateHertz: config.sampleRateHertz || 16000, // Must match the audio sample rate
-                languageCode: config.languageCode || 'en-US', // Initial language hint, can be omitted for auto-detection
-                enableAutomaticPunctuation: config.enableAutomaticPunctuation || true,
-                enableWordTimeOffsets: config.enableWordTimeOffsets || true,
-                enableAutomaticLanguageDetection: true, // Crucial for auto-detection
-                model: config.model || 'default',
+        // Make a POST request to the local Whisper API
+        const whisperApiResponse = await fetch('http://127.0.0.1:5000/transcribe', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
             },
-        };
+            body: JSON.stringify({ audio: audioBase64 }),
+        });
 
-        const [response] = await speechToTextService.client.recognize(request);
-        const transcription = response.results
-            .map(result => result.alternatives[0].transcript)
-            .join('\n');
-        const detectedLanguage = response.results[0]?.languageCode || config.languageCode; // Get detected language
+        if (!whisperApiResponse.ok) {
+            const errorData = await whisperApiResponse.json();
+            throw new Error(`Whisper API Error: ${errorData.error || whisperApiResponse.statusText}`);
+        }
+
+        const { transcription, detectedLanguage } = await whisperApiResponse.json();
 
         return new Response(JSON.stringify({ transcription, detectedLanguage }), { status: 200 });
 
     } catch (error) {
-        console.error('Speech-to-Text API route error:', error);
+        console.error('Local Whisper API route error:', error);
         return new Response(JSON.stringify({ error: error.message }), { status: 500 });
     }
 }
