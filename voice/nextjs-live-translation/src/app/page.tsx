@@ -7,6 +7,7 @@ export default function Home() {
   const [originalText, setOriginalText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
   const [translatedArabicText, setTranslatedArabicText] = useState('');
+  const [isMicInitialized, setIsMicInitialized] = useState(false); // New state for mic initialization
   const mediaRecorderRef = useRef<MediaRecorder | null>(null); // Ref for MediaRecorder
   const audioChunksRef = useRef<Blob[]>([]); // Ref to store audio data chunks
   const audioStreamRef = useRef<MediaStream | null>(null); // Ref for audio stream
@@ -80,6 +81,7 @@ export default function Home() {
           console.log('Microphone stream obtained:', stream);
           mediaRecorderRef.current = new MediaRecorder(stream);
           console.log('MediaRecorder initialized:', mediaRecorderRef.current);
+          setIsMicInitialized(true); // Set mic initialized to true
 
           mediaRecorderRef.current.ondataavailable = (event) => {
             console.log('MediaRecorder ondataavailable event:', event);
@@ -266,6 +268,7 @@ export default function Home() {
       <button
         id="startButton"
         onClick={toggleListening}
+        disabled={!isMicInitialized} // Disable button until mic is initialized
         className="px-8 py-4 text-2xl cursor-pointer bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
       >
         {listening ? 'Stop Session' : 'Start Session'}
